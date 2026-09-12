@@ -1,0 +1,513 @@
+# Scenario #001 — UIとシミュレーションの唯一の定義元
+schemaVersion: 1
+id: "001"
+revision: 1
+title: Checkoutの性能が急激に悪化
+audience: BACKEND ENGINEERING
+durationLabel: 20〜30分を想定
+description: ECサービスの通常ピーク。遅延とエラーが増え、購入を完了できない顧客が出ています。前日にdeploymentがありました。
+lead: |-
+  checkout APIが遅くなった。メモリ使用率は82%。
+  何を観測し、どの対処を選びますか。
+initialEvidence: checkout P99 {{metrics.p99}}s、error {{metrics.error}}%。CPU {{metrics.cpu}}%、memory
+  {{metrics.memory}}%、DB CPU {{metrics.dbCpu}}%、接続{{metrics.connections}}%。前日にdeployment。600
+  checkout試行/分の通常ピーク。平時P99 0.42s。
+hypotheses:
+  unknown: まだ絞れていない
+  app: アプリのリソース不足
+  db: DB待ち・接続圧力
+  change: 直近の変更による処理増加
+  traffic: トラフィック増加
+initial:
+  active: true
+  tasks: 4
+  scaledAt: null
+  fixedAt: null
+  dbScaled: false
+  pool: false
+  poolLimit: 100
+display:
+  cards:
+    - metric: p99
+      label: P99 LATENCY
+      unit: s
+      note: 平時 0.42s
+    - metric: error
+      label: ERROR RATE
+      unit: "%"
+      note: 健全条件 <0.5%
+    - metric: memory
+      label: APP MEMORY
+      unit: "%"
+      note: CPU {{metrics.cpu}}%
+    - metric: connections
+      label: DB CONNECTIONS
+      unit: "%"
+      note: DB CPU {{metrics.dbCpu}}%
+  status: ECS {{state.tasks}} tasks
+  chart:
+    metric: p99
+    label: P99
+    unit: s
+    max: 6
+    threshold: 0.8
+metrics:
+  p99:
+    round:
+      - if:
+          - not:
+              - ref: state.active
+          - if:
+              - lt:
+                  - sub:
+                      - ref: state.time
+                      - ref: state.fixedAt
+                  - 2
+              - 1.2
+              - 0.42
+          - if:
+              - ref: state.dbScaled
+              - if:
+                  - ref: state.pool
+                  - 1.6
+                  - 1.3
+              - if:
+                  - ref: state.pool
+                  - 2.7
+                  - if:
+                      - eq:
+                          - ref: state.tasks
+                          - 8
+                      - if:
+                          - gte:
+                              - sub:
+                                  - ref: state.time
+                                  - ref: state.scaledAt
+                              - 3
+                          - 4.5
+                          - 1.8
+                      - add:
+                          - 3.1
+                          - mul:
+                              - floor:
+                                  - div:
+                                      - ref: state.time
+                                      - 3
+                              - 0.1
+      - 2
+  connections:
+    if:
+      - not:
+          - ref: state.active
+      - if:
+          - lt:
+              - sub:
+                  - ref: state.time
+                  - ref: state.fixedAt
+              - 2
+          - 55
+          - 32
+      - if:
+          - ref: state.dbScaled
+          - if:
+              - ref: state.pool
+              - 48
+              - 60
+          - if:
+              - ref: state.pool
+              - 70
+              - if:
+                  - eq:
+                      - ref: state.tasks
+                      - 8
+                  - if:
+                      - gte:
+                          - sub:
+                              - ref: state.time
+                              - ref: state.scaledAt
+                          - 3
+                      - 97
+                      - 86
+                  - min:
+                      - 90
+                      - add:
+                          - 78
+                          - floor:
+                              - div:
+                                  - ref: state.time
+                                  - 3
+  error:
+    round:
+      - if:
+          - not:
+              - ref: state.active
+          - if:
+              - lt:
+                  - sub:
+                      - ref: state.time
+                      - ref: state.fixedAt
+                  - 2
+              - 0.6
+              - 0.15
+          - if:
+              - ref: state.dbScaled
+              - 0.7
+              - if:
+                  - ref: state.pool
+                  - 1.4
+                  - if:
+                      - eq:
+                          - ref: state.tasks
+                          - 8
+                      - if:
+                          - gte:
+                              - sub:
+                                  - ref: state.time
+                                  - ref: state.scaledAt
+                              - 3
+                          - 3.8
+                          - 1
+                      - add:
+                          - 1.8
+                          - mul:
+                              - floor:
+                                  - div:
+                                      - ref: state.time
+                                      - 3
+                              - 0.1
+      - 2
+  p50:
+    if:
+      - ref: state.active
+      - 220
+      - 180
+  p95:
+    round:
+      - mul:
+          - ref: metrics.p99
+          - 630
+      - 0
+  cpu:
+    if:
+      - ref: state.active
+      - if:
+          - eq:
+              - ref: state.tasks
+              - 8
+          - 29
+          - 46
+      - 24
+  memory:
+    if:
+      - ref: state.active
+      - if:
+          - eq:
+              - ref: state.tasks
+              - 8
+          - 64
+          - min:
+              - 94
+              - add:
+                  - 82
+                  - floor:
+                      - div:
+                          - ref: state.time
+                          - 3
+      - 43
+  dbCpu:
+    if:
+      - ref: state.active
+      - if:
+          - ref: state.dbScaled
+          - 38
+          - if:
+              - gt:
+                  - ref: metrics.connections
+                  - 90
+              - 74
+              - 61
+      - 29
+  queryLatency:
+    if:
+      - ref: state.active
+      - if:
+          - gt:
+              - ref: metrics.connections
+              - 90
+          - 150
+          - if:
+              - ref: state.dbScaled
+              - 28
+              - 74
+      - 12
+  queryCount:
+    if:
+      - ref: state.active
+      - 27
+      - 3
+  qps:
+    if:
+      - ref: state.active
+      - if:
+          - gt:
+              - ref: metrics.connections
+              - 90
+          - 1100
+          - 950
+      - 650
+healthy:
+  and:
+    - lt:
+        - ref: metrics.p99
+        - 0.8
+    - lt:
+        - ref: metrics.error
+        - 0.5
+    - lt:
+        - ref: metrics.connections
+        - 80
+limits:
+  minutes: 30
+  stableMinutes: 3
+impact:
+  requestsPerMinute: 600
+  errorMetric: error
+  featureUnavailable:
+    not:
+      - ref: state.active
+costs:
+  - when:
+      eq:
+        - ref: state.tasks
+        - 8
+    perMinute: 4
+  - when:
+      ref: state.dbScaled
+    perMinute: 6
+events:
+  - when:
+      and:
+        - ref: state.active
+        - eq:
+            - ref: state.tasks
+            - 8
+        - eq:
+            - sub:
+                - ref: state.time
+                - ref: state.scaledAt
+            - 3
+        - not:
+            - ref: state.pool
+        - not:
+            - ref: state.dbScaled
+    text: P99が再上昇。DB接続使用率97%。
+actions:
+  - id: app
+    label: アプリの状態
+    group: observe
+    duration: 1
+    description: CPU・memory・レイテンシ分布・ログを確認。
+    available: true
+    observation:
+      - when:
+          ref: state.active
+        text: P50 {{metrics.p50}}ms / P95 {{metrics.p95}}ms / P99 {{metrics.p99}}s。CPU
+          {{metrics.cpu}}%、memory {{metrics.memory}}%。OOM・再起動なし。遅延は大きいカートに偏る。CPU平均値では局所的飽和は排除できない。
+      - text: P50 {{metrics.p50}}ms / P95 {{metrics.p95}}ms / P99 {{metrics.p99}}s。CPU
+          {{metrics.cpu}}%、memory {{metrics.memory}}%。滞留が解消し、memoryも低下。
+    verifies: true
+  - id: db
+    label: DBの状態
+    group: observe
+    duration: 1
+    description: 接続数・query latency・QPS・エラーを確認。
+    available: true
+    observation:
+      - when:
+          ref: state.active
+        text: DB CPU {{metrics.dbCpu}}%、接続 {{metrics.connections}}% / 上限500。query latency
+          {{metrics.queryLatency}}ms、約{{metrics.qps}} QPS（DB全体、他API・再試行を含む）。pool acquire
+          timeoutが記録されている。平時は650 QPS、query latency 12ms。
+      - text: DB CPU {{metrics.dbCpu}}%、接続 {{metrics.connections}}%。query latency
+          {{metrics.queryLatency}}ms、約{{metrics.qps}} QPS。query待ちとtimeoutは収束している。
+    verifies: true
+  - id: queries
+    label: クエリの頻度を調査
+    group: observe
+    duration: 2
+    description: SQLの実行時間とrequestあたりの発行回数を比較。
+    available: true
+    observation:
+      - when:
+          ref: state.active
+        text: 対象requestはSQL 27回（平時3回）。同じSELECT fingerprintが商品IDだけ変えて反復。個別の実行は8〜15msで、slow
+          query閾値1秒を超えるSQLはほぼない。発行回数と待ち時間の合計に注目。
+      - text: 対象requestのSQLは3回。現在は反復SELECTを再現できない。変更前のサンプルはこの観測には含まれない。
+  - id: trace
+    label: 遅いrequestを追跡
+    group: observe
+    duration: 2
+    description: 1件の分散トレースで処理時間の内訳を確認。
+    available: true
+    observation:
+      - when:
+          ref: state.active
+        text: 大きなカート1件のtrace：recommendation
+          spanに24回の直列SELECT。DB接続取得待ちとqueryの合計がrequest時間の大半。小さいカート全体への一般化はまだできない。
+      - text: 現在のtraceにrecommendationの反復SELECTはない。checkoutは短時間で完了。
+  - id: changes
+    label: 開発者に変更を確認
+    group: talk
+    duration: 1
+    description: 前日のdeployment内容・互換性・切替方法を確認。
+    available: true
+    observation:
+      - text: 開発者：昨日recommendationをcheckoutへ追加しました。schema変更はなく前版へ戻せます。独立したfeature
+          flagで停止できます。単品カートでのテストは通過しています。
+  - id: sre
+    label: SREに構成を確認
+    group: talk
+    duration: 1
+    description: 接続プールとリソース制限の情報を取得。
+    available: true
+    observation:
+      - text: SRE：現在は1
+          taskあたりpool上限{{state.poolLimit}}、DB上限500です。滞留とリトライがあります。task増設時はpoolの合計も確認してください。OOMは出ていません。
+  - id: impact
+    label: PdMに影響を確認
+    group: talk
+    duration: 1
+    description: 顧客影響と一時停止できる機能を確認。
+    available: true
+    observation:
+      - text: PdM：決済完了できない問い合わせが増えています。まずcheckoutを守ってください。recommendationは一時停止して構いません。売上損失額はまだ確定できません。
+  - id: scale
+    label: ECSを8 tasksへ増設
+    group: act
+    duration: 2
+    description: 4→8 tasks。費用 +4単位/分。DB接続需要が増える可能性。
+    relevant:
+      - app
+      - db
+      - impact
+      - initial
+    available:
+      eq:
+        - ref: state.tasks
+        - 4
+    effects:
+      tasks: 8
+      scaledAt:
+        ref: state.time
+    feedback: CPU 46%は初期情報です。短期の影響軽減として増設する余地はありますが、DB接続への影響を追う必要があります。
+  - id: down
+    label: ECSを4 tasksへ戻す
+    group: act
+    duration: 2
+    description: 増設分を除去。アプリ側の処理能力が下がる。
+    relevant:
+      - app
+      - db
+      - sre
+    available:
+      eq:
+        - ref: state.tasks
+        - 8
+    effects:
+      tasks: 4
+      scaledAt: null
+  - id: disable
+    label: Recommendationを停止
+    group: act
+    duration: 1
+    description: feature flagをOFF。推薦機能が利用できなくなる。
+    relevant:
+      - changes
+      - trace
+      - impact
+    available:
+      ref: state.active
+    effects:
+      active: false
+      fixedAt:
+        ref: state.time
+    safetyEvidence:
+      - changes
+  - id: rollback
+    label: 前日の変更をrollback
+    group: act
+    duration: 4
+    description: 前版へ戻す。変更した機能が利用できなくなる。互換性に注意。
+    relevant:
+      - initial
+      - changes
+      - trace
+      - queries
+      - impact
+    available:
+      ref: state.active
+    effects:
+      active: false
+      fixedAt:
+        ref: state.time
+    safetyEvidence:
+      - changes
+  - id: dbscale
+    label: DBの容量を増強
+    group: act
+    duration: 6
+    description: 費用 +6単位/分。切替時に1分の接続影響。
+    relevant:
+      - db
+      - queries
+      - sre
+    available:
+      not:
+        - ref: state.dbScaled
+    effects:
+      dbScaled: true
+    lastMinuteErrorFloor: 5
+    cutoverText: DB切替：この1分はerror率5%以上として影響を積算。
+  - id: pool
+    label: 接続poolを50/taskに制限
+    group: act
+    duration: 2
+    description: DBへの接続を制限。アプリ側の待ちが増える可能性。
+    relevant:
+      - db
+      - sre
+    available:
+      not:
+        - ref: state.pool
+    effects:
+      pool: true
+      poolLimit: 50
+  - id: wait
+    label: 2分間、推移を観察
+    group: observe
+    duration: 2
+    description: 変更せず主要メトリクスの推移を見る。
+    available: true
+    observation:
+      - when:
+          ref: healthy
+        text: 観察後：P99 {{metrics.p99}}s、error {{metrics.error}}%、DB接続
+          {{metrics.connections}}%。現在の指標は健全範囲。継続時間も確認してください。
+      - text: 観察後：P99 {{metrics.p99}}s、error {{metrics.error}}%、DB接続
+          {{metrics.connections}}%。まだ健全条件を満たしていません。
+    verifies: true
+scoring:
+  evidenceMaxAge: 10
+  impactDivisor: 80
+  costDivisor: 20
+  unstableCap: 5
+  predictionMetric: p99
+  predictionTolerance: 0.05
+review:
+  title: DB待ちが、リソース不足に見えていた
+  rootCause: 前日のrecommendation追加で、一部の大きなカートにN+1
+    queryが発生。通常ピークでDB待ちが増え、requestの滞留、memoryと接続需要の増加、P99悪化へつながった。ECS増設はアプリ待ちを一時緩和したが、taskごとのpoolと滞留・再試行によってDB接続圧力を増やした。
+  reflectionPrompt: |-
+    どの観測で仮説を維持・変更しましたか。
+    未知の障害で、次に確かめたいことは何ですか。
+  followUp: 恒久対策ではqueryの集約と大きなカートの負荷試験も検討してください。

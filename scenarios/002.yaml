@@ -1,0 +1,226 @@
+# 比較デモ — シナリオ追加にJavaScript変更が不要なことを確かめる
+schemaVersion: 1
+id: "002"
+revision: 1
+title: Checkoutの遅延とCPU使用率が上昇
+audience: BACKEND ENGINEERING
+durationLabel: 5〜10分の比較デモ
+description: キャンペーンでcheckout流入が増加。購入処理の待ち時間とエラーが増えています。直近のリリース履歴は調査できます。
+lead: |-
+  CPU使用率は95%、P99は3.1秒。
+  流入と処理能力の関係をどう確かめますか。
+initialEvidence: checkout P99 {{metrics.p99}}s、error {{metrics.error}}%。CPU {{metrics.cpu}}%、memory
+  {{metrics.memory}}%、DB CPU {{metrics.dbCpu}}%、接続{{metrics.connections}}%。キャンペーン開始後に悪化。600
+  checkout試行/分。
+hypotheses:
+  unknown: まだ絞れていない
+  app: アプリのリソース不足
+  db: DB待ち・接続圧力
+  change: 直近の変更による処理増加
+  traffic: トラフィック増加
+initial:
+  tasks: 4
+  rolledBack: false
+display:
+  cards:
+    - metric: p99
+      label: P99 LATENCY
+      unit: s
+      note: 平時 0.48s
+    - metric: error
+      label: ERROR RATE
+      unit: "%"
+      note: 健全条件 <0.5%
+    - metric: memory
+      label: APP MEMORY
+      unit: "%"
+      note: CPU {{metrics.cpu}}%
+    - metric: connections
+      label: DB CONNECTIONS
+      unit: "%"
+      note: DB CPU {{metrics.dbCpu}}%
+  status: ECS {{state.tasks}} tasks
+  chart:
+    metric: p99
+    label: P99
+    unit: s
+    max: 6
+    threshold: 0.8
+metrics:
+  p99:
+    if:
+      - eq:
+          - ref: state.tasks
+          - 8
+      - 0.48
+      - 3.1
+  connections:
+    if:
+      - eq:
+          - ref: state.tasks
+          - 8
+      - 44
+      - 32
+  error:
+    if:
+      - eq:
+          - ref: state.tasks
+          - 8
+      - 0.2
+      - 1.8
+  p50:
+    if:
+      - eq:
+          - ref: state.tasks
+          - 8
+      - 180
+      - 480
+  p95:
+    if:
+      - eq:
+          - ref: state.tasks
+          - 8
+      - 320
+      - 1800
+  cpu:
+    if:
+      - eq:
+          - ref: state.tasks
+          - 8
+      - 52
+      - 95
+  memory:
+    if:
+      - eq:
+          - ref: state.tasks
+          - 8
+      - 51
+      - 78
+  dbCpu: 35
+  queryLatency: 12
+  queryCount: 3
+  qps: 650
+healthy:
+  and:
+    - lt:
+        - ref: metrics.p99
+        - 0.8
+    - lt:
+        - ref: metrics.error
+        - 0.5
+    - lt:
+        - ref: metrics.connections
+        - 80
+limits:
+  minutes: 30
+  stableMinutes: 3
+impact:
+  requestsPerMinute: 600
+  errorMetric: error
+  featureUnavailable:
+    ref: state.rolledBack
+costs:
+  - when:
+      eq:
+        - ref: state.tasks
+        - 8
+    perMinute: 4
+events: []
+actions:
+  - id: app
+    label: アプリの状態
+    group: observe
+    duration: 1
+    description: CPU・memory・レイテンシ分布・ログを確認。
+    available: true
+    observation:
+      - text: CPU {{metrics.cpu}}%、P99 {{metrics.p99}}s。全taskでCPU上昇、worker queue滞留。カートサイズには偏らず、流入は平時の約2倍。
+    verifies: true
+  - id: db
+    label: DBの状態
+    group: observe
+    duration: 1
+    description: 接続数・query latency・QPS・エラーを確認。
+    available: true
+    observation:
+      - text: DB CPU {{metrics.dbCpu}}%、接続{{metrics.connections}}%、query latency 12ms、SQL
+          3回/request。DBの待ち時間は平時とほぼ同じ。
+    verifies: true
+  - id: changes
+    label: 開発者に変更を確認
+    group: talk
+    duration: 1
+    description: 前日のdeployment内容・互換性・切替方法を確認。
+    available: true
+    observation:
+      - text: 開発者：昨日は文言修正だけです。処理ロジックとschemaは変えていません。rollbackは可能ですが、キャンペーン流入は続きます。
+  - id: impact
+    label: PdMに影響を確認
+    group: talk
+    duration: 1
+    description: 顧客影響と一時停止できる機能を確認。
+    available: true
+    observation:
+      - text: PdM：キャンペーンで流入が増加しています。checkoutを優先し、一時的な増設費用を許容します。
+  - id: scale
+    label: ECSを8 tasksへ増設
+    group: act
+    duration: 2
+    description: 4→8 tasks。費用 +4単位/分。DB接続需要が増える可能性。
+    relevant:
+      - app
+      - db
+      - impact
+      - initial
+    available:
+      eq:
+        - ref: state.tasks
+        - 4
+    effects:
+      tasks: 8
+    feedback: CPUの飽和とDBの余裕が確認できれば、処理能力を増やす判断には根拠があります。増設後もCPUとレイテンシを確認してください。
+  - id: rollback
+    label: 前日の変更をrollback
+    group: act
+    duration: 4
+    description: 前版の表示文言へ戻す。キャンペーンの流入は変わらない。
+    relevant:
+      - initial
+      - changes
+      - impact
+    available:
+      not:
+        - ref: state.rolledBack
+    effects:
+      rolledBack: true
+    safetyEvidence:
+      - changes
+  - id: wait
+    label: 2分間、推移を観察
+    group: observe
+    duration: 2
+    description: 変更せず主要メトリクスの推移を見る。
+    available: true
+    observation:
+      - when:
+          ref: healthy
+        text: 観察後：P99 {{metrics.p99}}s、error {{metrics.error}}%、DB接続
+          {{metrics.connections}}%。現在の指標は健全範囲。継続時間も確認してください。
+      - text: 観察後：P99 {{metrics.p99}}s、error {{metrics.error}}%、DB接続
+          {{metrics.connections}}%。まだ健全条件を満たしていません。
+    verifies: true
+scoring:
+  evidenceMaxAge: 10
+  impactDivisor: 80
+  costDivisor: 20
+  unstableCap: 5
+  predictionMetric: p99
+  predictionTolerance: 0.05
+review:
+  title: 流入に対してアプリの処理能力が不足していた
+  rootCause: キャンペーン流入によって全taskのCPUが飽和。DBの待ち時間とquery数は平時のまま。scale-outでworker
+    queueを解消できる。文言修正のrollbackでは容量も流入も変わらない。
+  reflectionPrompt: |-
+    前のシナリオの経験が、今回の判断にどう影響しましたか。
+    どの証拠で増設の是非を判断しましたか。
+  followUp: 比較用の短いデモです。継続する負荷への容量計画とキャンペーン前の負荷試験を検討してください。

@@ -1,0 +1,14 @@
+{
+  "name": "engineering-judgement",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.js",
+    "scenarios:check": "node scripts/check-scenarios.mjs"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
+  }
+}
