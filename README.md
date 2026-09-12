@@ -25,6 +25,9 @@ Open [the local prototype](http://127.0.0.1:4173). To use another port, run `POR
 | --- | --- | --- |
 | #001 | A checkout performance incident that appears to need more resources | Initial scenario, designed for a 20–30 minute session including reflection; timing is unvalidated |
 | #002 | A contrasting checkout incident where adding application capacity helps | Short comparison demo for exercising the shared engine; not a validated training scenario |
+| #003 | Transaction contention, retry amplification, and the cost of limiting concurrency | Playable; two recovery routes and delayed deterioration tested |
+| #004 | Mixed-version deployment, database compatibility, and rollback risk | Playable; compatibility repair and verified roll-forward tested |
+| #005 | Dependency recovery, retry load, and safe reopening | Playable; budget limits and temporary circuit breaking tested |
 
 ## Play
 
@@ -50,7 +53,7 @@ YAML defines the initial state, hypotheses, metric cards, observations, actions,
 
 | Location | Responsibility |
 | --- | --- |
-| `scenarios/001.yaml`, `scenarios/002.yaml` | Scenario definitions |
+| `scenarios/*.yaml` | Scenario definitions |
 | `src/engine.js` | Time advancement, state transitions, evidence snapshots, scoring, and export |
 | `src/rules.js` | Interpretation of the supported expressions |
 | `src/schema.js` | Definition and reference validation |
@@ -77,6 +80,8 @@ Passing these checks does not establish that a scenario is realistic or educatio
 These documents are currently in Japanese:
 
 - [Scenario #001 design](docs/scenario-001.md): hidden state, causal model, actions, evidence, scoring rubric, terminal conditions, representative paths, and review.
+- [New scenario designs](docs/scenarios-003-005.md): causal models, investigations, action risks, representative paths, and critical reviews.
+- [Scenario roadmap](docs/scenario-catalog.md): implementation order and remaining candidates.
 - [Critical review and playtest plan](docs/critique.md): design revisions, remaining limitations, and hypotheses to test.
 - [Validation record](docs/validation.md): completed checks and unverified behavior.
 
@@ -84,6 +89,6 @@ These documents are currently in Japanese:
 
 The simulation uses deterministic educational rules, not a production performance model. Costs are relative units. Customer impact is approximated by failed attempts rather than unique customers or lost revenue.
 
-The five scores are provisional proxies for recorded behavior. They do not evaluate the meaning of free-text reasoning. Assessing the relevance of a hypothesis, the information value of an observation, or the quality of a revised mental model requires human review. Session duration, differences between experience levels, and transfer to unfamiliar incidents remain unvalidated.
+The five scores are provisional proxies for recorded behavior. Scenarios #003–#005 additionally match the selected hypothesis, action purpose, cited evidence, and pre-action state against explicit rules. Unsupported combinations cap reasoning marks; observed hazards can cap safety marks. AAR comments compare each intervention with the subsequent observations before the next intervention. These rules still do not evaluate the meaning of free-text reasoning. Assessing the relevance of a hypothesis, the information value of an observation, or the quality of a revised mental model requires human review. Session duration, differences between experience levels, and transfer to unfamiliar incidents remain unvalidated.
 
 Root causes are hidden from the play screen but remain accessible in the scenario API response, source, and exported definition. This local prototype is not an anti-cheating system or a tool for hiring or ability certification.

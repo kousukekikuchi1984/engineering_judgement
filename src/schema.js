@@ -7,7 +7,7 @@ function keys(v,p){object(v,p);for(const key of Object.keys(v))if(!/^[a-zA-Z][a-
 const allowed=(v,names,p)=>{object(v,p);for(const key of Object.keys(v))if(!names.includes(key))throw new Error(`${p}: 未対応の項目 ${key}`);};
 const reserved=['version','scenarioId','time','stableMinutes','failures','extraCost','featureMinutes','ended','endReason','evidence','decisions','history','events','reflection'];
 export function validateScenario(c){
- allowed(c,['schemaVersion','id','revision','contentHash','title','audience','durationLabel','description','lead','initialEvidence','hypotheses','initial','display','metrics','healthy','limits','impact','costs','events','actions','scoring','review'],'scenario');if(c.schemaVersion!==1)throw new Error('schemaVersion: 対応バージョンは1です');
+ allowed(c,['schemaVersion','id','revision','contentHash','title','audience','durationLabel','description','lead','initialEvidence','hypotheses','initial','display','metrics','healthy','limits','impact','costs','events','actions','scoring','review','design'],'scenario');if(c.schemaVersion!==1)throw new Error('schemaVersion: 対応バージョンは1です');
  text(c.id,'id');if(!/^[a-z0-9][a-z0-9-]{0,63}$/.test(c.id))throw new Error('id: 英小文字、数字、ハイフンで記述してください');
  number(c.revision,'revision',1);if(!Number.isInteger(c.revision))throw new Error('revision: 整数が必要です');
  for(const k of ['title','audience','description','lead','durationLabel','initialEvidence'])text(c[k],k);
@@ -30,16 +30,30 @@ export function validateScenario(c){
  array(c.actions,'actions');if(!c.actions.length)throw new Error('actions: 1個以上必要です');
  const ids=new Set();for(const a of c.actions){text(a.id,'actions.id');if(!/^[a-z][a-z0-9-]*$/.test(a.id)||ids.has(a.id)||a.id==='initial')throw new Error(`actions: 不正または重複するID ${a.id}`);ids.add(a.id);}
  for(const a of c.actions){
-  const p=`actions.${a.id}`;allowed(a,['id','label','group','duration','description','relevant','available','effects','observation','verifies','safetyEvidence','feedback','lastMinuteErrorFloor','cutoverText'],p);text(a.label,p+'.label');text(a.description,p+'.description');if(!['observe','talk','act'].includes(a.group))throw new Error(p+'.group: observe / talk / act が必要です');
+  const p=`actions.${a.id}`;allowed(a,['id','label','group','duration','description','relevant','available','effects','observation','verifies','safetyEvidence','feedback','lastMinuteErrorFloor','cutoverText','cost','risk','judgment','hazards'],p);text(a.label,p+'.label');text(a.description,p+'.description');if(!['observe','talk','act'].includes(a.group))throw new Error(p+'.group: observe / talk / act が必要です');
   number(a.duration,p+'.duration',1,c.limits.minutes);if(!Number.isInteger(a.duration))throw new Error(p+'.duration: 整数が必要です');validateExpression(a.available,refs,p+'.available');
   if(a.effects){keys(a.effects,p+'.effects');if(a.group!=='act')throw new Error(p+': effectsは介入でのみ指定できます');for(const [key,value] of Object.entries(a.effects)){if(!Object.hasOwn(c.initial,key))throw new Error(`${p}.effects: 未定義の変数 ${key}`);validateExpression(value,refs,`${p}.effects.${key}`);const initialValue=c.initial[key],result=evaluate(value,initialContext);if(initialValue!==null&&typeof result!==typeof initialValue)throw new Error(`${p}.effects.${key}: 初期値と異なる型です`);}}
   if(a.observation){array(a.observation,p+'.observation');if(!a.observation.length||Object.hasOwn(a.observation.at(-1),'when'))throw new Error(p+'.observation: 最後に条件なしの表示文が必要です');a.observation.forEach((r,i)=>{if(Object.hasOwn(r,'when'))validateExpression(r.when,refs,`${p}.observation[${i}]`);template(r.text,p+'.observation.text');});}
   for(const k of ['relevant','safetyEvidence'])if(a[k]){array(a[k],p+'.'+k);a[k].forEach(id=>{if(id!=='initial'&&!ids.has(id))throw new Error(`${p}.${k}: 未定義の証拠 ${id}`);});}
+
+  if(a.cost!==undefined)number(a.cost,p+'.cost');
+  if(a.risk!==undefined)text(a.risk,p+'.risk');
+  const evidenceIds=(ids,field)=>{array(ids,field);ids.forEach(id=>{if(id!=='initial'&&!c.actions.some(x=>x.id===id&&x.observation))throw new Error(`${field}: 未定義の証拠 ${id}`);});};
+  if(a.judgment){array(a.judgment,p+'.judgment');a.judgment.forEach((r,i)=>{const q=`${p}.judgment[${i}]`;allowed(r,['hypotheses','purposes','evidence','when','message'],q);array(r.hypotheses,q+'.hypotheses');r.hypotheses.forEach(h=>{if(!Object.hasOwn(c.hypotheses,h))throw new Error(q+': 未定義の仮説 '+h);});array(r.purposes,q+'.purposes');r.purposes.forEach(v=>{if(!['investigate','mitigate','cause'].includes(v))throw new Error(q+': 未定義の目的');});evidenceIds(r.evidence,q+'.evidence');if(!r.evidence.length)throw new Error(q+': 根拠となる証拠が必要です');if(r.when!==undefined)validateExpression(r.when,refs,q+'.when');text(r.message,q+'.message');});}
+  if(a.hazards){array(a.hazards,p+'.hazards');a.hazards.forEach((r,i)=>{const q=`${p}.hazards[${i}]`;allowed(r,['evidence','when','message','safetyCap'],q);evidenceIds(r.evidence,q+'.evidence');if(!r.evidence.length)throw new Error(q+': 証拠が必要です');validateExpression(r.when,refs,q+'.when');text(r.message,q+'.message');number(r.safetyCap,q+'.safetyCap',0,10);});}
   if(a.feedback)text(a.feedback,p+'.feedback');if(a.verifies!==undefined&&typeof a.verifies!=='boolean')throw new Error(p+'.verifies: 真偽値が必要です');
   if(a.lastMinuteErrorFloor!==undefined){number(a.lastMinuteErrorFloor,p+'.lastMinuteErrorFloor',0,100);text(a.cutoverText,p+'.cutoverText');}
  }
  if(!c.actions.some(a=>a.group==='observe'&&a.available===true))throw new Error('actions: 常に利用可能な観測行動を1つ以上用意してください');
  object(c.scoring,'scoring');for(const k of ['evidenceMaxAge','predictionTolerance'])number(c.scoring[k],`scoring.${k}`);for(const k of ['impactDivisor','costDivisor'])number(c.scoring[k],`scoring.${k}`,.001);number(c.scoring.unstableCap,'scoring.unstableCap',0,10);metric(c.scoring.predictionMetric,'scoring.predictionMetric');
  object(c.review,'review');for(const k of ['title','rootCause','reflectionPrompt','followUp'])text(c.review[k],`review.${k}`);
+
+ if(c.review.outcomes){array(c.review.outcomes,'review.outcomes');if(!c.review.outcomes.length||c.review.outcomes.at(-1).when!==undefined)throw new Error('review.outcomes: 最後に条件なしの文が必要です');c.review.outcomes.forEach(r=>{if(r.when!==undefined)validateExpression(r.when,refs,'review.outcomes.when');template(r.text,'review.outcomes.text');});}
+ if(c.design){
+  const d=c.design;object(d,'design');
+  for(const k of ['targetLevel','customerImpact','terminalConditions','scoringEvidence'])text(d[k],`design.${k}`);
+  for(const k of ['learningObjectives','causalGraph','observableSignals','misleadingSignals','secondOrderEffects','reviewPoints','critique']){array(d[k],`design.${k}`);if(!d[k].length)throw new Error(`design.${k}: 1項目以上必要です`);d[k].forEach(v=>text(v,`design.${k}`));}
+  object(d.paths,'design.paths');for(const k of ['expert','alternative','dangerous','accidental','overInvestigation']){const route=d.paths[k];object(route,`design.paths.${k}`);text(route.note,`design.paths.${k}.note`);array(route.actions,`design.paths.${k}.actions`);if(!route.actions.length)throw new Error(`design.paths.${k}: 行動が必要です`);route.actions.forEach(id=>{if(!ids.has(id))throw new Error(`design.paths.${k}: 未定義の行動 ${id}`);});}
+ }
  return c;
 }

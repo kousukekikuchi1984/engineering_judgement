@@ -1,0 +1,605 @@
+schemaVersion: 1
+id: "003"
+revision: 1
+title: 注文の一部が失敗し、再試行が増えている
+audience: BACKEND / MID-LEVEL
+durationLabel: 15〜25分を想定・未検証
+description: deployment後、一部の注文transactionが失敗。DB CPUとメモリは平時に近い。
+lead: |-
+  失敗は全requestではなく、一部の注文に集中。
+  待つ、再試行する、処理を止める。何を根拠に選びますか。
+initialEvidence: P99 {{metrics.p99}}s、失敗率{{metrics.error}}%。CPU {{metrics.cpu}}%、DB CPU
+  {{metrics.dbCpu}}%。deployment後、一部の注文transactionが失敗。DB CPUとメモリは平時に近い。
+hypotheses:
+  unknown: まだ絞れていない
+  capacity: DB容量不足
+  transient: 一時的なtransaction失敗
+  ordering: transaction同士のlock順序の競合
+  release: 直近変更の回帰
+initial:
+  retryMode: 1
+  retryAt: 0
+  serialized: false
+  paused: false
+  fixed: false
+  rolledBack: false
+display:
+  cards:
+    - metric: p99
+      label: P99 LATENCY
+      unit: s
+      note: 健全条件 <2s
+    - metric: error
+      label: ORDER FAILURES
+      unit: "%"
+      note: commitできなかった注文試行
+    - metric: dbCpu
+      label: DB CPU
+      unit: "%"
+      note: memoryは平時の範囲
+    - metric: attempts
+      label: TX ATTEMPTS
+      unit: /min
+      note: 顧客の注文は600試行/分
+  status: 対応開始から{{state.time}}分
+  chart:
+    metric: p99
+    label: P99
+    unit: s
+    max: 10
+    threshold: 2
+metrics:
+  p99:
+    if:
+      - or:
+          - ref: state.fixed
+          - ref: state.paused
+          - ref: state.rolledBack
+      - 0.45
+      - if:
+          - ref: state.serialized
+          - 1.5
+          - if:
+              - eq:
+                  - ref: state.retryMode
+                  - 2
+              - 1.9
+              - if:
+                  - eq:
+                      - ref: state.retryMode
+                      - 3
+                  - if:
+                      - and:
+                          - eq:
+                              - ref: state.retryMode
+                              - 3
+                          - gte:
+                              - sub:
+                                  - ref: state.time
+                                  - ref: state.retryAt
+                              - 3
+                      - 6.8
+                      - 1.5
+                  - 3.2
+  error:
+    if:
+      - or:
+          - ref: state.fixed
+          - ref: state.paused
+          - ref: state.rolledBack
+      - 0.2
+      - if:
+          - ref: state.serialized
+          - 0.5
+          - if:
+              - eq:
+                  - ref: state.retryMode
+                  - 2
+              - 1.2
+              - if:
+                  - eq:
+                      - ref: state.retryMode
+                      - 3
+                  - if:
+                      - and:
+                          - eq:
+                              - ref: state.retryMode
+                              - 3
+                          - gte:
+                              - sub:
+                                  - ref: state.time
+                                  - ref: state.retryAt
+                              - 3
+                      - 8
+                      - 0.7
+                  - 3
+  cpu: 42
+  dbCpu:
+    if:
+      - and:
+          - and:
+              - eq:
+                  - ref: state.retryMode
+                  - 3
+              - gte:
+                  - sub:
+                      - ref: state.time
+                      - ref: state.retryAt
+                  - 3
+          - not:
+              - or:
+                  - ref: state.fixed
+                  - ref: state.paused
+                  - ref: state.rolledBack
+          - not:
+              - ref: state.serialized
+      - 52
+      - 38
+  memory: 57
+  deadlocks:
+    if:
+      - or:
+          - ref: state.fixed
+          - ref: state.paused
+          - ref: state.rolledBack
+      - 0
+      - if:
+          - ref: state.serialized
+          - 1
+          - if:
+              - eq:
+                  - ref: state.retryMode
+                  - 2
+              - 3
+              - if:
+                  - and:
+                      - eq:
+                          - ref: state.retryMode
+                          - 3
+                      - gte:
+                          - sub:
+                              - ref: state.time
+                              - ref: state.retryAt
+                          - 3
+                  - 45
+                  - 12
+  attempts:
+    if:
+      - or:
+          - ref: state.fixed
+          - ref: state.paused
+          - ref: state.rolledBack
+      - 610
+      - if:
+          - ref: state.serialized
+          - 620
+          - if:
+              - eq:
+                  - ref: state.retryMode
+                  - 2
+              - 680
+              - if:
+                  - and:
+                      - eq:
+                          - ref: state.retryMode
+                          - 3
+                      - gte:
+                          - sub:
+                              - ref: state.time
+                              - ref: state.retryAt
+                          - 3
+                  - 2300
+                  - if:
+                      - eq:
+                          - ref: state.retryMode
+                          - 3
+                      - 1200
+                      - 800
+healthy:
+  and:
+    - lt:
+        - ref: metrics.p99
+        - 2
+    - lt:
+        - ref: metrics.error
+        - 1
+limits:
+  minutes: 30
+  stableMinutes: 3
+impact:
+  requestsPerMinute: 600
+  errorMetric: error
+  featureUnavailable:
+    or:
+      - ref: state.paused
+      - ref: state.rolledBack
+costs:
+  - when:
+      and:
+        - eq:
+            - ref: state.retryMode
+            - 3
+        - not:
+            - or:
+                - ref: state.fixed
+                - ref: state.paused
+                - ref: state.rolledBack
+    perMinute: 3
+events:
+  - when:
+      and:
+        - and:
+            - eq:
+                - ref: state.retryMode
+                - 3
+            - gte:
+                - sub:
+                    - ref: state.time
+                    - ref: state.retryAt
+                - 3
+        - not:
+            - or:
+                - ref: state.fixed
+                - ref: state.paused
+                - ref: state.rolledBack
+        - not:
+            - ref: state.serialized
+    text: 再試行増加から3分。失敗率{{metrics.error}}%、transaction試行{{metrics.attempts}}/分へ上昇。
+actions:
+  - id: app
+    label: アプリとDBの使用率を見る
+    group: observe
+    duration: 1
+    description: CPU飽和と、待ち・競合を切り分ける。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: true
+    observation:
+      - text: CPU {{metrics.cpu}}%、DB CPU {{metrics.dbCpu}}%、memory 57%。OOMなし。開始時には待機中のworkerが多く、CPUだけでは待ち時間を説明できなかった。
+  - id: errors
+    label: 失敗したtransactionを調べる
+    group: observe
+    duration: 1
+    description: エラーコードと、失敗した処理の共通点を読む。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: false
+    observation:
+      - text: 保存済みの失敗サンプル：SQLSTATE 40P01。DBがtransactionをabortした記録。注文IDの冪等キーがあり、再実行前にはtransaction全体のrollbackが完了している。
+  - id: locks
+    label: lock待ちの組み合わせを追う
+    group: observe
+    duration: 2
+    description: 複数transactionの取得順と保持範囲を比較する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: true
+    observation:
+      - text: 障害開始時のDBログ：注文経路Aはorder→inventory、一括予約経路Bはinventory→orderを取得し、相互待ちになった。いずれもcommitまでlockを保持。現在のdeadlock発生は{{metrics.deadlocks}}件/分。
+  - id: changes
+    label: 開発者に変更を確認する
+    group: talk
+    duration: 1
+    description: 判断に必要な制約と事実を確認する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: false
+    observation:
+      - text: 新しい一括予約処理を追加した。schema変更はなく前版へ戻せる。flagで一括予約だけ停止できる。通常注文は継続可能。修正版はlock順序を統一し、競合テストと段階適用を含めて6分必要。
+  - id: impact
+    label: PdMに停止できる範囲を確認する
+    group: talk
+    duration: 1
+    description: 判断に必要な制約と事実を確認する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: false
+    observation:
+      - text: 通常注文の失敗を優先して抑えたい。一括予約は一時停止を許容するが、その間の利用者は手動予約へ案内する。機能停止分はAARに残す。
+  - id: retry
+    label: 再試行回数を増やす
+    group: act
+    duration: 1
+    description: 再実行の上限を増やす。transactionの再試行負荷が増える。
+    risk: 短期の成功率改善が、並行transaction増加を招く可能性。
+    cost: 0
+    available:
+      not:
+        - eq:
+            - ref: state.retryMode
+            - 3
+    effects:
+      retryMode: 3
+      retryAt:
+        ref: state.time
+    relevant:
+      - errors
+      - impact
+    judgment:
+      - hypotheses:
+          - transient
+        evidence:
+          - errors
+          - impact
+        purposes:
+          - mitigate
+        message: abortと冪等性を確認し、注文影響の一時軽減を狙った判断です。再試行負荷を追う必要があります。
+    hazards:
+      - evidence:
+          - locks
+        when: true
+        safetyCap: 3
+        message: 取得順の競合を示す証拠があります。無制御の再試行増加は競合を増やすため、回数とbackoffを再検討してください。
+  - id: backoff
+    label: 再試行をbackoffと予算で制限する
+    group: act
+    duration: 2
+    description: 再試行を分散し、1注文あたりの回数を抑える。
+    risk: 再試行を諦める注文が残る。競合の要因そのものを変える操作ではない。
+    cost: 0
+    available:
+      not:
+        - eq:
+            - ref: state.retryMode
+            - 2
+    effects:
+      retryMode: 2
+    relevant:
+      - errors
+      - locks
+    judgment:
+      - hypotheses:
+          - transient
+          - ordering
+        evidence:
+          - errors
+        purposes:
+          - mitigate
+        message: 再実行可能性を確認したうえで、再試行負荷を制限しています。原因対応とは分けて評価します。
+  - id: serialize
+    label: 一括予約の同時実行を絞る
+    group: act
+    duration: 2
+    description: 一括予約の同時実行を1へ制限する。
+    risk: 競合を減らせる可能性はあるが、一括予約の処理待ちが伸びる。
+    cost: 0
+    available:
+      not:
+        - ref: state.serialized
+    effects:
+      serialized: true
+    relevant:
+      - locks
+      - impact
+    judgment:
+      - hypotheses:
+          - ordering
+        evidence:
+          - locks
+          - impact
+        purposes:
+          - mitigate
+        message: 競合相手と業務上の制約を確認し、処理待ちを引き受けて通常注文を保護する判断です。
+  - id: pause
+    label: 一括予約のfeatureを停止する
+    group: act
+    duration: 1
+    description: 通常注文を残し、新しい一括予約だけ停止する。
+    risk: 一括予約が利用できなくなる。再開には原因対応が必要。
+    cost: 0
+    available:
+      not:
+        - or:
+            - ref: state.fixed
+            - ref: state.paused
+            - ref: state.rolledBack
+    effects:
+      paused: true
+    relevant:
+      - changes
+      - impact
+      - locks
+    judgment:
+      - hypotheses:
+          - release
+          - ordering
+        evidence:
+          - changes
+          - impact
+        purposes:
+          - mitigate
+        message: 変更範囲と機能停止の許容を確認して影響を局所化しています。
+    safetyEvidence:
+      - changes
+  - id: rollback
+    label: 前版のアプリへ戻す
+    group: act
+    duration: 4
+    description: 直近の変更を取り除く。
+    risk: 一括予約の新機能は利用できなくなる。互換性確認が必要。
+    cost: 0
+    available:
+      not:
+        - or:
+            - ref: state.fixed
+            - ref: state.paused
+            - ref: state.rolledBack
+    effects:
+      rolledBack: true
+    relevant:
+      - changes
+      - errors
+    judgment:
+      - hypotheses:
+          - release
+          - ordering
+        evidence:
+          - changes
+        purposes:
+          - mitigate
+          - cause
+        message: schema互換性と変更内容を確認したrollbackです。前版へ戻すことで回帰を取り除きます。
+    safetyEvidence:
+      - changes
+  - id: fix
+    label: 修正版を検証して段階適用する
+    group: act
+    duration: 6
+    description: 競合テストを行い、修正版をcanaryから適用する。
+    risk: 変更作業中の顧客影響は続く。既知の競合以外は別途監視が必要。
+    cost: 4
+    available:
+      not:
+        - ref: state.fixed
+    effects:
+      fixed: true
+      paused: false
+      serialized: false
+      rolledBack: false
+    relevant:
+      - locks
+      - changes
+    judgment:
+      - hypotheses:
+          - ordering
+        evidence:
+          - locks
+          - changes
+        purposes:
+          - cause
+        message: 相互待ちの証拠と修正内容を照合して構造的な原因に対応しています。
+    safetyEvidence:
+      - locks
+  - id: wait
+    label: 2分間、推移を観察
+    group: observe
+    duration: 2
+    description: 新しい変更を加えず、継続後の状態を確認する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: true
+    observation:
+      - text: P99 {{metrics.p99}}s、失敗率{{metrics.error}}%。行動直後の値と比較してください。
+scoring:
+  evidenceMaxAge: 30
+  impactDivisor: 200
+  costDivisor: 20
+  unstableCap: 5
+  predictionMetric: p99
+  predictionTolerance: 0.05
+review:
+  title: 異なるlock順序と再試行が競合を増幅した
+  rootCause: 通常注文と新しい一括予約が同じ行を逆順にlockした。abortしたtransactionを直ちに大量再試行すると、同時実行とlock競合が増える。CPUに余裕があっても進行できない。
+  reflectionPrompt: |-
+    どの観測で仮説を変えましたか。
+    軽減できた影響と、残った課題を分けて書いてください。
+  followUp: 全経路のlock順序、transaction範囲、冪等性、上限付きbackoffを検証する。単一の競合ペアを直しただけで全deadlockが消えるとは一般化しない。
+  outcomes:
+    - when:
+        ref: state.fixed
+      text: 修正版を適用済み。今回の競合原因を除去した。
+    - when:
+        ref: state.rolledBack
+      text: 前版へ戻して回帰を除去した。新機能の再導入には修正が必要。
+    - when:
+        ref: state.paused
+      text: 機能停止で軽減した。原因コードは残っている。
+    - when:
+        ref: state.serialized
+      text: 同時実行の制限で軽減した。一括予約の待ち時間とlock順序の課題は残る。
+    - text: 原因対応と安定復旧は未確認。
+design:
+  targetLevel: Mid-level Backend Engineer
+  learningObjectives:
+    - 再試行可能なエラーと、負荷としてのretryを分ける
+    - lock順序・transaction範囲・制限の代償を説明する
+  causalGraph:
+    - 異なるlock取得順 → 相互待ち → transaction abort
+    - 即時retry増加 → 並行transaction増加 → lock競合増加 → 再abort
+    - 競合経路の停止/直列化 → 競合減少 → 通常注文回復
+  observableSignals:
+    - 低いDB CPUと待機worker
+    - 40P01と冪等キー
+    - 保存済みのlockペアと取得順
+  misleadingSignals:
+    - 低いCPUをDB健全の証拠と誤読
+    - retry直後はerror 3%→0.7%に改善
+  secondOrderEffects:
+    - retry増加から3分後にerror 8%、P99 6.8s
+    - 直列化で一括予約待ち、停止で機能利用不可
+  customerImpact: 600注文試行/分。失敗率を毎分積算。停止機能の分数も別記録。一括予約の待ち件数は未モデル化。
+  terminalConditions: P99<2sかつerror<1%が丸3分継続して復旧宣言。30分で打ち切り。直列化だけの安定も許容し、AARで原因残存を示す。
+  scoringEvidence: lock証拠とchangesを原因修正の根拠にする。retry軽減はabort/冪等性とcustomer impactの両方を要する。証拠を伴わない偶然のrollbackは記録品質が低い。
+  reviewPoints:
+    - 増加した再試行数と顧客の注文数を混同しなかったか
+    - 停止・直列化の代償と復旧後の残課題を記録したか
+    - 短期改善後の再観測で仮説を更新したか
+  paths:
+    expert:
+      actions:
+        - errors
+        - locks
+        - changes
+        - impact
+        - pause
+        - wait
+        - wait
+      note: 変更範囲と顧客制約を確認して早期に限定停止する。
+    alternative:
+      actions:
+        - errors
+        - locks
+        - changes
+        - fix
+        - wait
+        - wait
+      note: 長めの顧客影響を引き受け、検証済み修正で原因を除去する。
+    dangerous:
+      actions:
+        - errors
+        - impact
+        - retry
+        - wait
+        - wait
+      note: 一時改善を観察した後に増幅が表面化する。
+    accidental:
+      actions:
+        - rollback
+        - wait
+        - wait
+      note: 引用も仮説も記録せずrollbackして偶然復旧する。
+    overInvestigation:
+      actions:
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+        - locks
+      note: 情報を集め続けて顧客影響が積み上がる。
+  critique:
+    - 原因を質問せず、復旧と残課題をゴールにした。
+    - deadlockという名前だけでは停止範囲と再試行の安全性は判断できない。
+    - CPU・エラー・lock・changesを異なる情報源にした。
+    - 平均CPUと直後の成功率をmisleading signalにした。
+    - pause/serialize/backoffと原因修正を分離した。
+    - retryの評価が3分後に逆転する。
+    - 機能停止と処理待ちの副作用を表示する。
+    - 熟練差は再試行予算と確認条件の記録で仮説として観察する。
+    - 限定停止・rollback・修正・直列化の複数経路を許容する。
+    - 競合ペアは保存ログ。直列化で全deadlockを除去するとはせず低頻度の残存を置いた。

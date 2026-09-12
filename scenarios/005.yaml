@@ -1,0 +1,621 @@
+schemaVersion: 1
+id: "005"
+revision: 1
+title: 配送見積もりAPIの遅延が、依存先の復旧後も続く
+audience: BACKEND / MID-LEVEL
+durationLabel: 15〜25分を想定・未検証
+description: 配送見積もりの外部APIで一時的な障害を検知。こちらのtimeoutと再試行も増えている。
+lead: |-
+  外部障害の通知から対応を開始します。
+  依存先の状態と、自分たちが送る負荷を分けて確認してください。
+initialEvidence: P99 {{metrics.p99}}s、失敗率{{metrics.error}}%。CPU {{metrics.cpu}}%、DB CPU
+  {{metrics.dbCpu}}%。配送見積もりの外部APIで一時的な障害を検知。こちらのtimeoutと再試行も増えている。
+hypotheses:
+  unknown: まだ絞れていない
+  dependency: 外部APIの障害が継続している
+  amplification: 多層の再試行が負荷を増幅している
+  capacity: workerの処理能力不足
+initial:
+  budget: false
+  breaker: false
+  fixed: false
+  workers: 4
+  scaleAt: 0
+  controlAt: 0
+display:
+  cards:
+    - metric: p99
+      label: P99 LATENCY
+      unit: s
+      note: 高速な失敗も含む
+    - metric: error
+      label: QUOTE FAILURES
+      unit: "%"
+      note: 顧客の取得試行は400/min
+    - metric: attempts
+      label: OUTBOUND ATTEMPTS
+      unit: /min
+      note: retryを含む外部呼び出し
+    - metric: cpu
+      label: WORKER CPU
+      unit: "%"
+      note: worker {{metrics.workers}}台
+  status: 対応開始から{{state.time}}分
+  chart:
+    metric: p99
+    label: P99
+    unit: s
+    max: 10
+    threshold: 1
+metrics:
+  p99:
+    if:
+      - ref: state.breaker
+      - 0.05
+      - if:
+          - and:
+              - or:
+                  - ref: state.budget
+                  - ref: state.fixed
+              - gte:
+                  - sub:
+                      - ref: state.time
+                      - ref: state.controlAt
+                  - 3
+              - gte:
+                  - ref: state.time
+                  - 3
+          - 0.55
+          - if:
+              - or:
+                  - ref: state.budget
+                  - ref: state.fixed
+              - 2
+              - if:
+                  - eq:
+                      - ref: state.workers
+                      - 8
+                  - if:
+                      - and:
+                          - eq:
+                              - ref: state.workers
+                              - 8
+                          - gte:
+                              - sub:
+                                  - ref: state.time
+                                  - ref: state.scaleAt
+                              - 3
+                      - 8
+                      - 2.2
+                  - if:
+                      - lt:
+                          - ref: state.time
+                          - 3
+                      - 3.5
+                      - 6
+  error:
+    if:
+      - ref: state.breaker
+      - 100
+      - if:
+          - and:
+              - or:
+                  - ref: state.budget
+                  - ref: state.fixed
+              - gte:
+                  - sub:
+                      - ref: state.time
+                      - ref: state.controlAt
+                  - 3
+              - gte:
+                  - ref: state.time
+                  - 3
+          - 0.3
+          - if:
+              - or:
+                  - ref: state.budget
+                  - ref: state.fixed
+              - 8
+              - if:
+                  - eq:
+                      - ref: state.workers
+                      - 8
+                  - if:
+                      - and:
+                          - eq:
+                              - ref: state.workers
+                              - 8
+                          - gte:
+                              - sub:
+                                  - ref: state.time
+                                  - ref: state.scaleAt
+                              - 3
+                      - 45
+                      - 8
+                  - if:
+                      - lt:
+                          - ref: state.time
+                          - 3
+                      - 18
+                      - 25
+  cpu:
+    if:
+      - ref: state.breaker
+      - 12
+      - if:
+          - and:
+              - or:
+                  - ref: state.budget
+                  - ref: state.fixed
+              - gte:
+                  - sub:
+                      - ref: state.time
+                      - ref: state.controlAt
+                  - 3
+              - gte:
+                  - ref: state.time
+                  - 3
+          - 35
+          - if:
+              - and:
+                  - eq:
+                      - ref: state.workers
+                      - 8
+                  - gte:
+                      - sub:
+                          - ref: state.time
+                          - ref: state.scaleAt
+                      - 3
+              - 91
+              - 62
+  dbCpu: 24
+  attempts:
+    if:
+      - ref: state.breaker
+      - 0
+      - if:
+          - and:
+              - or:
+                  - ref: state.budget
+                  - ref: state.fixed
+              - gte:
+                  - sub:
+                      - ref: state.time
+                      - ref: state.controlAt
+                  - 3
+              - gte:
+                  - ref: state.time
+                  - 3
+          - 420
+          - if:
+              - or:
+                  - ref: state.budget
+                  - ref: state.fixed
+              - 600
+              - if:
+                  - and:
+                      - eq:
+                          - ref: state.workers
+                          - 8
+                      - gte:
+                          - sub:
+                              - ref: state.time
+                              - ref: state.scaleAt
+                          - 3
+                  - 9600
+                  - if:
+                      - eq:
+                          - ref: state.workers
+                          - 8
+                      - 4800
+                      - 3600
+  providerProbeError:
+    if:
+      - lt:
+          - ref: state.time
+          - 3
+      - 15
+      - 0.2
+  workers:
+    ref: state.workers
+healthy:
+  and:
+    - lt:
+        - ref: metrics.p99
+        - 1
+    - lt:
+        - ref: metrics.error
+        - 1
+limits:
+  minutes: 30
+  stableMinutes: 3
+impact:
+  requestsPerMinute: 400
+  errorMetric: error
+  featureUnavailable:
+    ref: state.breaker
+costs:
+  - when:
+      eq:
+        - ref: state.workers
+        - 8
+    perMinute: 4
+events:
+  - when:
+      and:
+        - and:
+            - eq:
+                - ref: state.workers
+                - 8
+            - gte:
+                - sub:
+                    - ref: state.time
+                    - ref: state.scaleAt
+                - 3
+        - not:
+            - or:
+                - ref: state.budget
+                - ref: state.fixed
+        - not:
+            - ref: state.breaker
+    text: worker増設から3分。外部呼び出しが{{metrics.attempts}}/分に増え、失敗率{{metrics.error}}%へ悪化。
+  - when:
+      gte:
+        - ref: state.time
+        - 3
+    text: 外部事業者が一時障害の復旧を通知。自分たちの経路の復旧は別途確認してください。
+actions:
+  - id: app
+    label: workerと顧客影響を見る
+    group: observe
+    duration: 1
+    description: 使用率・遅延・失敗率を対応づける。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: true
+    observation:
+      - text: worker {{metrics.workers}}台、CPU {{metrics.cpu}}%、P99
+          {{metrics.p99}}s、失敗率{{metrics.error}}%。外部待ちと再試行を含む値。
+  - id: attempts
+    label: requestと再試行の数を比べる
+    group: observe
+    duration: 2
+    description: 利用者の試行数と外部呼び出し数を分ける。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: true
+    observation:
+      - text: 顧客の取得試行400/minに対し、現在の外部呼び出し{{metrics.attempts}}/min。障害開始時のtraceでは1つの取得が複数層で繰り返され、同じtrace
+          IDにtimeoutが集中。対象は読み取り専用の配送見積もり。
+  - id: dependency
+    label: 外部APIを低頻度でprobeする
+    group: observe
+    duration: 1
+    description: 通常経路と分離した低頻度probeを比較する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: true
+    observation:
+      - when:
+          lt:
+            - ref: state.time
+            - 3
+        text: 低頻度probeも失敗率15%。事業者は一部障害を調査中。こちらの再試行負荷とは分離した観測。
+      - text: 分離した低頻度probeは失敗率0.2%。事業者の一時障害は復旧した。ただし通常経路の失敗率は{{metrics.error}}%。probe成功だけでは通常経路の回復を断定できない。
+  - id: config
+    label: timeoutとretryの設定を読む
+    group: observe
+    duration: 2
+    description: 複数層の試行上限と待ち時間を照合する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: false
+    observation:
+      - text: 障害開始時の設定：3層が各最大3試行、最大27回の外部呼び出しになりうる。即時retryでjitterなし、全体予算なし。運用上の予算制限は2分、単一層retryとjitterを含む検証済み修正の適用は5分。変更後も既存の待ち行列が排出されるまで3分かかる。
+  - id: impact
+    label: PdMに縮退の条件を確認する
+    group: talk
+    duration: 1
+    description: 判断に必要な制約と事実を確認する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: false
+    observation:
+      - text: 見積もり取得の失敗を減らしたい。古い価格でのfallbackは許容しない。過負荷拡大を防ぐための短い受付停止は許容するが、高速なエラーを復旧と扱わない。
+  - id: scale
+    label: workerを4台から8台へ増やす
+    group: act
+    duration: 2
+    description: 待機する取得処理を並列に実行する。
+    risk: 外部呼び出しの総数も増える。追加費用4単位/分。
+    cost: 0
+    available:
+      not:
+        - eq:
+            - ref: state.workers
+            - 8
+    effects:
+      workers: 8
+      scaleAt:
+        ref: state.time
+    relevant:
+      - app
+      - impact
+    judgment:
+      - hypotheses:
+          - capacity
+          - dependency
+        evidence:
+          - app
+          - impact
+        purposes:
+          - mitigate
+        message: 負荷と顧客影響を確認した短期軽減です。呼び出し数と遅延を継続観測する必要があります。
+    hazards:
+      - evidence:
+          - config
+        when:
+          not:
+            - or:
+                - ref: state.budget
+                - ref: state.fixed
+        safetyCap: 4
+        message: 多層retryに予算がないと観測済みです。worker増設は外部への負荷も増幅します。
+  - id: circuit
+    label: 外部呼び出しを一時遮断する
+    group: act
+    duration: 1
+    description: 見積もり取得を即時エラーにして、依存先への流入を止める。
+    risk: 見積もり取得が100%失敗する。短期の保護であり復旧ではない。
+    cost: 0
+    available:
+      not:
+        - ref: state.breaker
+    effects:
+      breaker: true
+    relevant:
+      - attempts
+      - impact
+    judgment:
+      - hypotheses:
+          - amplification
+          - dependency
+        evidence:
+          - attempts
+          - impact
+        purposes:
+          - mitigate
+        message: 流入負荷と受付停止の代償を確認して保護しています。再開条件とretry制御が必要です。
+  - id: close
+    label: 外部呼び出しを再開する
+    group: act
+    duration: 1
+    description: 低頻度probeから通常の受付へ戻す。
+    risk: retry制御がなければ通常負荷で再び増幅する。
+    cost: 0
+    available:
+      ref: state.breaker
+    effects:
+      breaker: false
+    relevant:
+      - dependency
+      - config
+      - attempts
+    judgment:
+      - hypotheses:
+          - amplification
+        evidence:
+          - dependency
+          - config
+        purposes:
+          - mitigate
+        message: 依存先とretry設定を確認した再開です。通常経路の回復を観測してください。
+        when:
+          or:
+            - ref: state.budget
+            - ref: state.fixed
+    hazards:
+      - evidence:
+          - config
+        when:
+          not:
+            - or:
+                - ref: state.budget
+                - ref: state.fixed
+        safetyCap: 2
+        message: 全体のretry予算がないまま再開するため、外部の一時障害が終わっていても増幅が残ります。
+  - id: budget
+    label: 再試行の総予算を制限する
+    group: act
+    duration: 2
+    description: 運用設定で外部呼び出し数を抑え、待ち行列を排出する。
+    risk: 排出に3分必要。retryを諦める取得が残る。多層設定の恒久修正は別途必要。
+    cost: 0
+    available:
+      not:
+        - or:
+            - ref: state.budget
+            - ref: state.fixed
+    effects:
+      budget: true
+      controlAt:
+        ref: state.time
+    relevant:
+      - attempts
+      - config
+    judgment:
+      - hypotheses:
+          - amplification
+        evidence:
+          - attempts
+          - config
+        purposes:
+          - mitigate
+        message: 顧客試行と外部呼び出しの差、複数層の設定を根拠に増幅を制限しています。排出後の再確認が必要です。
+  - id: patch
+    label: 単一層retryとjitterの修正を適用する
+    group: act
+    duration: 5
+    description: 用意された修正を負荷試験し、段階適用する。
+    risk: 検証中も影響が続き、適用後の待ち行列排出にも3分必要。
+    cost: 4
+    available:
+      not:
+        - ref: state.fixed
+    effects:
+      fixed: true
+      controlAt:
+        ref: state.time
+    relevant:
+      - attempts
+      - config
+    judgment:
+      - hypotheses:
+          - amplification
+        evidence:
+          - attempts
+          - config
+        purposes:
+          - cause
+        message: 多層retryと呼び出し増幅を確認して、全体予算と待ち時間を持つ単一層へ変更しています。
+    safetyEvidence:
+      - config
+  - id: wait
+    label: 2分間、推移を観察
+    group: observe
+    duration: 2
+    description: 新しい変更を加えず、継続後の状態を確認する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: true
+    observation:
+      - text: P99 {{metrics.p99}}s、失敗率{{metrics.error}}%。行動直後の値と比較してください。
+scoring:
+  evidenceMaxAge: 30
+  impactDivisor: 200
+  costDivisor: 20
+  unstableCap: 5
+  predictionMetric: p99
+  predictionTolerance: 0.05
+review:
+  title: 依存先の復旧と、自分たちの回復は同じではなかった
+  rootCause: 外部の一時障害は3分で収束したが、3層の即時retryが通常経路の負荷を増幅し続けた。worker増設は短期に待ちを減らした後、外部への試行数を増やした。
+  reflectionPrompt: |-
+    どの観測で仮説を変えましたか。
+    軽減できた影響と、残った課題を分けて書いてください。
+  followUp: 全体のretry予算、単一層での上限付きbackoffとjitter、timeoutの整合を検証する。書き込みAPIの場合は副作用と冪等性を別途設計する。
+  outcomes:
+    - when:
+        ref: state.breaker
+      text: 外部への流入は止めたが、見積もり取得は100%失敗。復旧には安全な再開が必要。
+    - when:
+        ref: state.fixed
+      text: retry方針の修正を適用した。待ち行列排出と通常経路の安定は時系列で確認する。
+    - when:
+        ref: state.budget
+      text: 運用上の予算制限で軽減した。多層retry設定の恒久修正が残る。
+    - text: 通常経路のretry増幅が残り、依存先の復旧だけでは回復していない。
+design:
+  targetLevel: Mid-level Backend Engineer
+  learningObjectives:
+    - 顧客の試行と内部retryを分ける
+    - 依存先の正常性と通常経路の負荷を分ける
+    - 受付停止と安定復旧の違いを説明する
+  causalGraph:
+    - 外部一時障害 → timeout → 多層即時retry → 外部への過負荷 → timeout継続
+    - worker増設 → 短期待ち減少 → 外部試行増加 → 3分後に悪化
+    - 総予算制限 → 3分で待ち行列排出 → 通常経路回復
+  observableSignals:
+    - 顧客400試行/minと外部呼び出し数の差
+    - 複数層のretry設定と同一traceの失敗
+    - 復旧後の分離probeと通常経路の差
+  misleadingSignals:
+    - 事業者の復旧通知
+    - 増設直後のP99改善
+    - 遮断時のP99 0.05s
+  secondOrderEffects:
+    - 増設3分後にP99 8sとerror45%
+    - 遮断で見積もり取得が100%失敗
+    - 予算制限後も3分は待ち行列の排出が続く
+  customerImpact: 400取得試行/分。高速な受付拒否も失敗として積算。遮断分数と増設費を別に残す。
+  terminalConditions: P99<1sかつerror<1%が丸3分継続。30分で打ち切り。遮断したままでは復旧にならない。
+  scoringEvidence: attemptsとconfigを根拠にretry制御を選ぶ。遮断はattemptsとimpactが必要。事業者probeだけを原因対応の根拠にしない。
+  reviewPoints:
+    - 外部復旧後に仮説を更新したか
+    - 増設や遮断後にerror率も見たか
+    - 予算制限後の排出時間と再開条件を記録したか
+  paths:
+    expert:
+      actions:
+        - dependency
+        - attempts
+        - config
+        - budget
+        - wait
+        - wait
+        - wait
+      note: 再試行増幅を確認して予算を制限する。
+    alternative:
+      actions:
+        - attempts
+        - impact
+        - circuit
+        - config
+        - dependency
+        - patch
+        - wait
+        - wait
+        - close
+        - wait
+        - wait
+      note: 一時遮断で保護し、方針修正と排出を待って再開する。
+    dangerous:
+      actions:
+        - app
+        - impact
+        - scale
+        - wait
+        - wait
+      note: 短期改善した後、外部試行増加で悪化。
+    accidental:
+      actions:
+        - budget
+        - wait
+        - wait
+        - wait
+      note: 設定を根拠なく変えて偶然回復する。
+    overInvestigation:
+      actions:
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+        - attempts
+      note: 同じ調査を続け、影響が積み上がり打ち切り。
+  critique:
+    - 原因名の選択ではなく、通常経路の回復をゴールにした。
+    - retryの知識だけで遮断時間や再開条件は決まらない。
+    - 顧客試行・外部試行・分離probeを別々に観測する。
+    - 事業者通知と低いP99が誤読を誘う。
+    - 予算制限による軽減と恒久修正を分けた。
+    - worker増設の効果は3分後に逆転する。
+    - 遮断は顧客エラーを増やす代償がある。
+    - 熟練差は予算・再開条件と仮説変更の記録で観察するが未検証。
+    - 直接の予算制限と遮断を伴う修正の複数経路を許容する。
+    - 読み取りAPIに限定。待ち行列は3分の簡略モデルで実queue長や各retry分布は再現しない。

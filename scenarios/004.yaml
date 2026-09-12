@@ -1,0 +1,518 @@
+schemaVersion: 1
+id: "004"
+revision: 1
+title: リリース後、一部のプロフィール取得だけ500になる
+audience: BACKEND / MID-LEVEL
+durationLabel: 15〜25分を想定・未検証
+description: rolling deployment中。旧版と新版が共存し、取得APIの一部だけ500になる。CPUは平時の範囲。
+lead: |-
+  すべてのrequestが失敗しているわけではない。
+  失敗の偏りを調べながら、どちらの版を動かすか判断してください。
+initialEvidence: P99 {{metrics.p99}}s、失敗率{{metrics.error}}%。CPU {{metrics.cpu}}%、DB CPU
+  {{metrics.dbCpu}}%。rolling deployment中。旧版と新版が共存し、取得APIの一部だけ500になる。CPUは平時の範囲。
+hypotheses:
+  unknown: まだ絞れていない
+  capacity: 新しいinstanceの処理能力不足
+  schema: アプリとDB schemaの互換性破壊
+  release: 新しいアプリの回帰
+  routing: 特定versionへのroutingの偏り
+initial:
+  oldPercent: 20
+  compatible: false
+  drained: false
+  drainedAt: 0
+  capacityReady: false
+display:
+  cards:
+    - metric: error
+      label: HTTP 500
+      unit: "%"
+      note: versionごとの内訳は要調査
+    - metric: p99
+      label: P99 LATENCY
+      unit: s
+      note: 平時 0.4s
+    - metric: cpu
+      label: APP CPU
+      unit: "%"
+      note: DB CPU {{metrics.dbCpu}}%
+    - metric: oldPercent
+      label: OLD VERSION TRAFFIC
+      unit: "%"
+      note: 旧版へ向かうrequestの割合
+  status: 対応開始から{{state.time}}分
+  chart:
+    metric: p99
+    label: P99
+    unit: s
+    max: 6
+    threshold: 1
+metrics:
+  error:
+    if:
+      - and:
+          - ref: state.drained
+          - not:
+              - ref: state.capacityReady
+          - gte:
+              - sub:
+                  - ref: state.time
+                  - ref: state.drainedAt
+              - 3
+      - 12
+      - if:
+          - and:
+              - not:
+                  - ref: state.compatible
+              - gt:
+                  - ref: state.oldPercent
+                  - 0
+          - ref: state.oldPercent
+          - 0.2
+  p99:
+    if:
+      - and:
+          - ref: state.drained
+          - not:
+              - ref: state.capacityReady
+          - gte:
+              - sub:
+                  - ref: state.time
+                  - ref: state.drainedAt
+              - 3
+      - 4.2
+      - if:
+          - and:
+              - not:
+                  - ref: state.compatible
+              - gt:
+                  - ref: state.oldPercent
+                  - 0
+          - 1.3
+          - 0.55
+  cpu:
+    if:
+      - and:
+          - ref: state.drained
+          - not:
+              - ref: state.capacityReady
+          - gte:
+              - sub:
+                  - ref: state.time
+                  - ref: state.drainedAt
+              - 3
+      - 96
+      - 45
+  dbCpu: 30
+  oldPercent:
+    ref: state.oldPercent
+  newError:
+    if:
+      - and:
+          - ref: state.drained
+          - not:
+              - ref: state.capacityReady
+          - gte:
+              - sub:
+                  - ref: state.time
+                  - ref: state.drainedAt
+              - 3
+      - 12
+      - 0.2
+  connections: 32
+healthy:
+  and:
+    - lt:
+        - ref: metrics.p99
+        - 1
+    - lt:
+        - ref: metrics.error
+        - 1
+limits:
+  minutes: 30
+  stableMinutes: 3
+impact:
+  requestsPerMinute: 300
+  errorMetric: error
+  featureUnavailable: false
+costs:
+  - when:
+      ref: state.capacityReady
+    perMinute: 2
+events:
+  - when:
+      and:
+        - ref: state.drained
+        - not:
+            - ref: state.capacityReady
+        - gte:
+            - sub:
+                - ref: state.time
+                - ref: state.drainedAt
+            - 3
+    text: 旧版へのrouting停止から3分。新版CPUが96%、失敗率12%へ上昇。残存taskの余力を再評価してください。
+actions:
+  - id: app
+    label: 全体のメトリクスを見る
+    group: observe
+    duration: 1
+    description: CPU・DB負荷と失敗率を確認する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: true
+    observation:
+      - text: CPU {{metrics.cpu}}%、DB CPU {{metrics.dbCpu}}%、P99
+          {{metrics.p99}}s、失敗率{{metrics.error}}%。平均値だけではversion間の差は分からない。
+  - id: versions
+    label: versionごとの失敗率を見る
+    group: observe
+    duration: 1
+    description: 失敗するrequestと動いている版を対応づける。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: true
+    observation:
+      - when:
+          and:
+            - ref: state.drained
+            - not:
+                - ref: state.capacityReady
+            - gte:
+                - sub:
+                    - ref: state.time
+                    - ref: state.drainedAt
+                - 3
+        text: 旧版trafficは0%。新版の現在の失敗率は{{metrics.newError}}%、CPU {{metrics.cpu}}%。互換性とは別に容量が不足している。
+      - when:
+          ref: state.compatible
+        text: 互換対応後、旧版・新版とも500は収束。現在の旧版trafficは{{metrics.oldPercent}}%。
+      - when:
+          and:
+            - not:
+                - ref: state.compatible
+            - gt:
+                - ref: state.oldPercent
+                - 0
+        text: 旧版へ{{metrics.oldPercent}}%のtraffic。旧版は対象APIで500、新版は0.2%。保存ログの旧版エラーはundefined_column。
+      - text: 旧版trafficは0%。旧版の保存ログはundefined_column。新版の現在の失敗率は{{metrics.error}}%。
+  - id: schema
+    label: migrationとDBの定義を読む
+    group: observe
+    duration: 2
+    description: 変更内容と旧版・新版の契約を照合する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: false
+    observation:
+      - text: migrationでdisplay_nameをpublic_nameへrename済み。旧版はdisplay_name、新版はpublic_nameを読む。このシナリオの対象経路は読み取り専用。互換viewで同じ基底値を旧名でも公開でき、値のコピーや二重書き込みは不要。
+  - id: probe
+    label: 新版の動作と余力を確認する
+    group: observe
+    duration: 2
+    description: 新版に分離したread-only probeと容量測定を行う。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: false
+    observation:
+      - text: 開始時の測定：新版はschema適合、ただし当初の新版taskだけでは全trafficを支えられない。増設とreadiness確認に5分必要。現在の新版容量確保済み：{{state.capacityReady}}。現在の全体失敗率{{metrics.error}}%。
+  - id: changes
+    label: 開発者にリリース手順を確認する
+    group: talk
+    duration: 1
+    description: 判断に必要な制約と事実を確認する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: false
+    observation:
+      - text: アプリのrollbackはDB
+          migrationを戻さない。全版を検証した互換viewの適用候補と、新版のtask増設候補がある。前者は6分、後者は5分必要。破壊的renameの即時逆操作は新版を壊すので候補に含めていない。
+  - id: impact
+    label: PdMに影響を確認する
+    group: talk
+    duration: 1
+    description: 判断に必要な制約と事実を確認する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: false
+    observation:
+      - text: プロフィール表示が失敗している。古い情報や誤った名前を返す対処は許容しない。数分の追加リソース費用より、正しく表示できる利用者を増やしたい。
+  - id: rollback
+    label: 旧版へアプリをrollbackする
+    group: act
+    duration: 4
+    description: アプリだけを前版へ戻す。DBの変更は別管理。
+    risk: DBとの互換性がなければ失敗範囲が広がる。
+    cost: 0
+    available:
+      not:
+        - eq:
+            - ref: state.oldPercent
+            - 100
+    effects:
+      oldPercent: 100
+      drained: false
+      capacityReady: false
+    relevant:
+      - initial
+      - versions
+      - schema
+      - changes
+    judgment:
+      - hypotheses:
+          - schema
+          - release
+        evidence:
+          - schema
+        purposes:
+          - mitigate
+          - cause
+        message: 互換viewが既に有効な状態で旧版へ戻しているため、既知の読み取り契約は維持できます。
+        when:
+          ref: state.compatible
+    safetyEvidence:
+      - schema
+    hazards:
+      - evidence:
+          - schema
+        when:
+          not:
+            - ref: state.compatible
+        safetyCap: 0
+        message: 旧列名は失われ、互換対応もまだありません。アプリだけ戻すと旧版への全requestが同じ不整合に当たります。
+  - id: drain
+    label: 旧版へのtrafficを止める
+    group: act
+    duration: 1
+    description: 旧版をrouting対象から外す。
+    risk: 残った新版へ負荷が集中する。taskの余力は別途確認が必要。
+    cost: 0
+    available:
+      gt:
+        - ref: state.oldPercent
+        - 0
+    effects:
+      oldPercent: 0
+      drained: true
+      drainedAt:
+        ref: state.time
+    relevant:
+      - versions
+      - impact
+      - probe
+    judgment:
+      - hypotheses:
+          - schema
+          - routing
+        evidence:
+          - versions
+          - impact
+        purposes:
+          - mitigate
+        message: 失敗する版と顧客影響を確認してroutingを切り替えています。短期軽減の後に新版の容量を確認してください。
+    hazards:
+      - evidence:
+          - probe
+        when:
+          not:
+            - ref: state.capacityReady
+        safetyCap: 4
+        message: 新版だけでは全量trafficを支えられないと観測済みです。増設完了までの過負荷を監視する必要があります。
+  - id: rollforward
+    label: 新版を検証・増設して展開を完了する
+    group: act
+    duration: 5
+    description: read-only probeとreadinessを確認し、新版の処理能力を確保して切り替える。
+    risk: 検証と起動を待つ間も失敗は続く。DB互換性を戻す対処ではない。
+    cost: 3
+    available:
+      not:
+        - ref: state.capacityReady
+    effects:
+      oldPercent: 0
+      drained: false
+      capacityReady: true
+    relevant:
+      - versions
+      - probe
+      - schema
+      - impact
+    judgment:
+      - hypotheses:
+          - schema
+          - routing
+        evidence:
+          - versions
+          - probe
+        purposes:
+          - mitigate
+          - cause
+        message: 失敗のversion差と新版の正常動作を確認し、容量を確保して前進しています。旧版へのrollback可能性は別途回復が必要です。
+    safetyEvidence:
+      - probe
+  - id: compat
+    label: 互換viewを検証して適用する
+    group: act
+    duration: 6
+    description: 旧名と新名を同じ基底値へ対応づけ、旧版のroutingも安全に戻す。
+    risk: 適用時の短いschema lockと、viewの読み取り契約の検証が必要。
+    cost: 4
+    available:
+      not:
+        - ref: state.compatible
+    effects:
+      compatible: true
+      drained: false
+      oldPercent:
+        if:
+          - eq:
+              - ref: state.oldPercent
+              - 0
+          - 20
+          - ref: state.oldPercent
+    relevant:
+      - schema
+      - versions
+      - changes
+    judgment:
+      - hypotheses:
+          - schema
+        evidence:
+          - schema
+          - versions
+        purposes:
+          - mitigate
+          - cause
+        message: 両versionの契約とrenameを照合し、データを複製せず互換性を回復しています。
+    lastMinuteErrorFloor: 4
+    cutoverText: 互換viewの適用で、この1分は失敗率4%以上として影響を積算。
+    safetyEvidence:
+      - schema
+  - id: wait
+    label: 2分間、推移を観察
+    group: observe
+    duration: 2
+    description: 新しい変更を加えず、継続後の状態を確認する。
+    available: true
+    cost: 0
+    risk: 読み取り専用。調査中も顧客影響は継続する。
+    verifies: true
+    observation:
+      - text: P99 {{metrics.p99}}s、失敗率{{metrics.error}}%。行動直後の値と比較してください。
+scoring:
+  evidenceMaxAge: 30
+  impactDivisor: 150
+  costDivisor: 20
+  unstableCap: 5
+  predictionMetric: p99
+  predictionTolerance: 0.05
+review:
+  title: アプリを戻しても、DBの契約は戻らなかった
+  rootCause: 破壊的な列renameが先行し、旧版アプリが残る間に旧列への参照が失敗した。新版は正常だが、旧版を外すだけでは新版taskの余力が不足する。DB migrationとrolling
+    deploymentは原子的には切り替わらない。
+  reflectionPrompt: |-
+    どの観測で仮説を変えましたか。
+    軽減できた影響と、残った課題を分けて書いてください。
+  followUp: expand→migrate→contractを分け、old/new共存試験とrollback可能期間を設ける。今回は読み取り専用の互換viewを仮定しており、書き込み経路にそのまま適用しない。
+  outcomes:
+    - when:
+        ref: state.compatible
+      text: 旧版・新版の読み取り互換性を回復した。破壊的変更を含むリリース手順は改善が必要。
+    - when:
+        ref: state.capacityReady
+      text: 新版への前進でサービスを復旧した。旧版との互換性は未回復で、単純rollbackは依然危険。
+    - text: アプリとschemaの整合、または残存taskの容量が未解決。
+design:
+  targetLevel: Mid-level Backend Engineer
+  learningObjectives:
+    - old/new共存とDB変更の非原子性を確認する
+    - rollbackとrollforwardの安全条件を比較する
+  causalGraph:
+    - 列rename → 旧版だけundefined_column → 一部の取得が500
+    - アプリrollback → 旧版の割合増加 → 失敗範囲拡大
+    - 旧版routing停止 → 新版への集中 → 数分後に過負荷
+  observableSignals:
+    - version別error率
+    - migrationの列renameと現在のschema
+    - 新版probeの成功と容量不足
+  misleadingSignals:
+    - 平均CPUは低い
+    - deployment直後なのでrollbackが安全に見える
+    - 旧版を外すと500が一時的に収束する
+  secondOrderEffects:
+    - 全量を旧版へ戻すとerror100%
+    - 旧版を外すだけだと3分後に新版過負荷
+    - 前進復旧でも旧版互換性は未回復
+  customerImpact: プロフィール取得300試行/分。誤データでのfallbackは選択肢に入れない。失敗試行と追加リソース費を積算。
+  terminalConditions: P99<1sかつerror<1%が丸3分継続。30分打ち切り。互換性回復または検証済みの前進で安定復旧できる。
+  scoringEvidence: 互換viewはschemaとversions、新版への前進はversionsとprobeを根拠にする。既知の非互換を無視したrollbackは安全性を0に制限する。
+  reviewPoints:
+    - 全体平均からversion別へ調査を分けた時点
+    - rollback対象とDB変更の範囲を確認したか
+    - 復旧しても残るrollback制約を認識したか
+  paths:
+    expert:
+      actions:
+        - versions
+        - probe
+        - impact
+        - rollforward
+        - wait
+        - wait
+      note: 新版の正常性と容量を確認して前進する。
+    alternative:
+      actions:
+        - versions
+        - schema
+        - compat
+        - wait
+        - wait
+      note: 両版の契約を回復して復旧する。
+    dangerous:
+      actions:
+        - versions
+        - impact
+        - drain
+        - wait
+        - wait
+      note: 旧版を外した直後は改善し、3分後に過負荷。
+    accidental:
+      actions:
+        - rollforward
+        - wait
+        - wait
+      note: たまたま正しい方向へ展開を完了したが、根拠の記録はない。
+    overInvestigation:
+      actions:
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+        - schema
+      note: 互換性の証拠を得ても介入を選ばず打ち切り。
+  critique:
+    - 原因当てではなく、どの版へどれだけ流すかを判断させる。
+    - schemaという名前を知ってもrollforwardと互換対応の取引は残る。
+    - versions・schema・probeは別の観測として選べる。
+    - 直近deploymentと平均CPUに加え、drain直後の改善を誤読しうる。
+    - routing軽減、互換回復、リリース手順の恒久改善を分離した。
+    - drainは短期改善後に悪化する。
+    - rollbackで失敗範囲が拡大し、前進ではrollback可能性が残課題になる。
+    - 熟練差は互換性と容量の両方を確認する判断記録に期待するが未検証。
+    - 検証済み前進と互換viewの複数経路がある。
+    - renameを消しただけでデータが戻るとはしない。対象をread-onlyとし、同じ基底値を読むviewに限定した。
